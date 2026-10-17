@@ -39,42 +39,44 @@ CONFIG_PATH = SCRIPT_DIR / "qidong_config.json"
 ICON_PATH = SCRIPT_DIR / "R-C.jpg"
 WINDOWS_OEM_CODE_PAGE = ctypes.windll.kernel32.GetOEMCP()
 WINDOWS_OEM_ENCODING = f"cp{WINDOWS_OEM_CODE_PAGE}"
-
+#如果要修改默认配置，请在这里修改，修改后删除 qidong_config.json 文件即可恢复默认配置
 DEFAULT_APP_CONFIG = {
     "ollama": {"path": shutil.which("ollama") or r"C:\Users\你的用户名\AppData\Local\Programs\Ollama\ollama.exe"},
     "notepad": {"path": shutil.which("notepad") or r"C:\Windows\notepad.exe"},
     "cmd": {"path": shutil.which("cmd") or r"C:\Windows\System32\cmd.exe"},
+    # 新增快捷命令，只在这里加，不用写elif
+    "网卡": {"path": shutil.which("explorer.exe"), "args":["ms-settings:network-advancedsettings"]},
+    "旧网卡": {"path": shutil.which("explorer.exe"), "args":["ncpa.cpl"]},
+    "环境变量": {"path": shutil.which("explorer.exe"), "args":["sysdm.cpl,,3"]},
 }
 # =================================================
-def save_default_config():
-    config = {name: {"path": info.get("path", "")} for name, info in DEFAULT_APP_CONFIG.items()}
-    try:
-        with CONFIG_PATH.open("w", encoding="utf-8") as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
-    except OSError:
-        pass
 def load_app_config():
-    config = {name: {"path": info.get("path", "")} for name, info in DEFAULT_APP_CONFIG.items()}
-
+    # 完整复制默认配置，path+args全部保留
+    config = {name: info.copy() for name, info in DEFAULT_APP_CONFIG.items()}
     if not CONFIG_PATH.exists():
         save_default_config()
         return config
-
     try:
         with CONFIG_PATH.open("r", encoding="utf-8") as f:
             loaded = json.load(f)
     except (OSError, json.JSONDecodeError):
         return config
-
     if isinstance(loaded, dict):
         for name, value in loaded.items():
             if isinstance(value, dict):
                 path_value = value.get("path", "")
                 if isinstance(path_value, str):
-                    config[str(name).lower()] = {"path": path_value}
-
+                    lower_name = str(name).lower()
+                    # 如果这个命令存在于config，只覆盖path，不动args
+                    if lower_name in config:
+                        config[lower_name]["path"] = path_value
+                    else:
+                        # json新增的全新命令（不在DEFAULT_APP_CONFIG），完整读取path+args
+                        new_item = {"path": path_value}
+                        if "args" in value:
+                            new_item["args"] = value["args"]
+                        config[lower_name] = new_item
     return config
-
 
 def resolve_executable(path_value):
     if not path_value:
@@ -90,10 +92,7 @@ def resolve_executable(path_value):
     found = shutil.which(candidate)
     if found:
         return found
-
     return None
-
-
 APP_CONFIG = load_app_config()
 ACTIVE_COMMAND_PROCESS = None
 ACTIVE_COMMAND_DIALOG = None
@@ -543,6 +542,15 @@ class CommandDialog(QDialog):
                 self._show_status(f"找不到程序“{command_name}”，请检查配置路径")
                 self.focus_input()
                 return
+
+            preset_args = app_info.get("args")
+            # 如果配置写了args，使用配置预设参数，忽略用户输入后面的内容
+            if preset_args is not None:
+                self._start_command_process(command_name, executable, preset_args)
+                self.focus_input()
+                return
+
+            # ollama特殊：没有预设args，使用用户输入的参数
             if command_name == "ollama":
                 self._start_command_process(
                     f"ollama {' '.join(command_parts[1:])}".strip(),
@@ -551,7 +559,12 @@ class CommandDialog(QDialog):
                 )
                 self.focus_input()
                 return
+
+            # 普通程序(notepad等)，用户输入后面的当做参数
             command = subprocess.list2cmdline([executable] + command_parts[1:])
+            self._start_command_process(command)
+            self.focus_input()
+            return
 
         self._start_command_process(command)
         self.focus_input()
